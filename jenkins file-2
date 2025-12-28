@@ -1,0 +1,89 @@
+pipeline {
+    agent any
+
+    tools {
+        jdk 'jdk17'
+        nodejs 'node23'
+    }
+
+    environment {
+        DOCKER_IMAGE = 'ashok8877/bms:latest'
+        EKS_CLUSTER_NAME = 'kastro-eks'
+        AWS_REGION = 'us-east-1'
+    }
+
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Checkout from Git') {
+            steps {
+                git branch: 'main', url: 'https://github.com/KastroVKiran/Book-My-Show.git'
+                sh 'ls -la'
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh '''
+                cd bookmyshow-app
+                ls -la
+                if [ -f package.json ]; then
+                    rm -rf node_modules package-lock.json
+                    npm install
+                else
+                    echo "Error: package.json not found in bookmyshow-app!"
+                    exit 1
+                fi
+                '''
+            }
+        }
+
+        stage('Trivy FS Scan') {
+            steps {
+                sh 'trivy fs . > trivyfs.txt'
+            }
+        }
+
+        stage('Docker Build & Push') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
+                        sh '''
+                        echo "Building Docker image..."
+                        docker build --no-cache -t $DOCKER_IMAGE -f bookmyshow-app/Dockerfile bookmyshow-app
+
+                        echo "Pushing Docker image to Docker Hub..."
+                        docker push $DOCKER_IMAGE
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to EKS Cluster') {
+            steps {
+                script {
+                    sh '''
+                    echo "Verifying AWS credentials..."
+                    aws sts get-caller-identity
+
+                    echo "Configuring kubectl for EKS cluster..."
+                    aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
+
+                    echo "Deploying application to EKS..."
+                    kubectl apply -f deployment.yml
+                    kubectl apply -f service.yml
+
+                    echo "Verifying deployment..."
+                    kubectl get pods
+                    kubectl get svc
+                    '''
+                }
+            }
+        }
+    }
+}
